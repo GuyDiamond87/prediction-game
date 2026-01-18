@@ -1,0 +1,646 @@
+// Prisma Schema for Prediction Game
+// This defines all database tables and their relationships
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// USER - Core user account
+// ==========================================
+model User {
+  id                    String   @id @default(cuid())
+  walletAddress         String   @unique  // Solana wallet address (primary identifier)
+
+  // Points & XP
+  points                Int      @default(1000)  // Spendable currency, starts at 1000
+  xp                    Int      @default(0)     // Lifetime XP, never decreases, used for airdrops
+
+  // ELO Rating System
+  elo                   Int      @default(1200)  // Current ELO rating
+  peakElo               Int      @default(1200)  // Highest ELO ever achieved
+  rankTier              RankTier @default(BRONZE)
+
+  // Streaks
+  currentStreak         Int      @default(0)     // Current win streak
+  longestStreak         Int      @default(0)     // Best streak ever
+
+  // Activity tracking (for decay)
+  lastPredictionAt      DateTime?               // When they last made a prediction
+  lastLoginAt           DateTime?               // When they last logged in
+  predictionsThisWeek   Int      @default(0)    // Reset weekly, used for activity check
+
+  // Lifetime stats
+  totalPredictions      Int      @default(0)
+  totalWins             Int      @default(0)
+  totalLosses           Int      @default(0)
+
+  // Head-to-head stats
+  h2hWins               Int      @default(0)
+  h2hLosses             Int      @default(0)
+
+  // Tournament stats
+  tournamentWins        Int      @default(0)
+
+  // Token holder status (cached)
+  isTokenHolder         Boolean  @default(false)
+  tokenBalanceCheckedAt DateTime?
+
+  // Profile
+  displayName           String?                 // Optional custom name (token holders only)
+  profileColor          String?                 // Profile customization (token holders only)
+
+  // Timestamps
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  // Relationships
+  predictions           Prediction[]
+  dailyChallengeEntries DailyChallengeEntry[]
+  battlesAsPlayer1      Battle[]               @relation("BattlePlayer1")
+  battlesAsPlayer2      Battle[]               @relation("BattlePlayer2")
+  battlesWon            Battle[]               @relation("BattleWinner")
+  matchmakingEntry      MatchmakingQueue?
+  tournamentEntries     TournamentEntry[]
+  seasonResults         SeasonResult[]
+  airdropDistributions  AirdropDistribution[]
+  eloHistory            EloHistory[]
+  pointsTransactions    PointsTransaction[]
+
+  @@index([elo])
+  @@index([xp])
+  @@index([isTokenHolder])
+  @@index([lastPredictionAt])
+}
+
+// Rank tiers based on ELO
+enum RankTier {
+  BRONZE      // 0-1199
+  SILVER      // 1200-1399
+  GOLD        // 1400-1599
+  PLATINUM    // 1600-1799
+  DIAMOND     // 1800-1999
+  MASTER      // 2000-2199
+  GRANDMASTER // 2200+
+}
+
+// ==========================================
+// MARKET - Synced from Polymarket
+// ==========================================
+model Market {
+  id                    String   @id @default(cuid())
+  polymarketId          String   @unique        // Polymarket's ID for this market
+  conditionId           String?                 // Polymarket condition ID
+
+  // Market details
+  question              String                  // The prediction question
+  description           String?                 // Additional context
+  category              String?                 // politics, sports, crypto, etc.
+
+  // Pricing/Odds (0.00 to 1.00)
+  yesPrice              Float    @default(0.5)  // Current YES price
+  noPrice               Float    @default(0.5)  // Current NO price
+
+  // Resolution
+  status                MarketStatus @default(OPEN)
+  outcome               MarketOutcome?          // YES, NO, or null if not resolved
+
+  // Dates
+  endDate               DateTime?               // When market closes for predictions
+  resolutionDate        DateTime?               // When Polymarket resolved it
+
+  // Volume & trending
+  volume                Float    @default(0)    // Volume on Polymarket (for trending)
+  isTrending            Boolean  @default(false) // Top 50 by volume
+
+  // Sync tracking
+  lastSyncedAt          DateTime @default(now())
+
+  // Timestamps
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  // Relationships
+  predictions           Prediction[]
+  dailyChallenges       DailyChallenge[]       @relation("DailyChallengeMarkets")
+  battles               Battle[]               @relation("BattleMarkets")
+  tournaments           Tournament[]           @relation("TournamentMarkets")
+
+  @@index([status])
+  @@index([isTrending])
+  @@index([endDate])
+  @@index([volume])
+}
+
+enum MarketStatus {
+  OPEN      // Accepting predictions
+  CLOSED    // No more predictions, waiting for resolution
+  RESOLVED  // Resolved with outcome
+  VOIDED    // Cancelled, refund all bets
+}
+
+enum MarketOutcome {
+  YES
+  NO
+}
+
+// ==========================================
+// PREDICTION - User's predictions on markets
+// ==========================================
+model Prediction {
+  id                    String   @id @default(cuid())
+
+  // Who and what
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id])
+  marketId              String
+  market                Market   @relation(fields: [marketId], references: [id])
+
+  // The prediction
+  prediction            PredictionChoice       // YES or NO
+  pointsWagered         Int                    // How many points bet
+  oddsAtPrediction      Float                  // The price when they made prediction
+  eloAtPrediction       Int                    // Their ELO when they made prediction
+
+  // Token holder status at time of prediction (affects XP earning)
+  wasTokenHolder        Boolean  @default(false)
+
+  // Settlement
+  isSettled             Boolean  @default(false)
+  won                   Boolean?               // null until settled
+  pointsEarned          Int?                   // Payout if won (null until settled)
+  pointsLost            Int?                   // Loss amount if lost (null until settled)
+  eloChange             Int?                   // ELO gained/lost (null until settled)
+  xpEarned              Int?                   // XP earned (null until settled)
+  streakAtSettlement    Int?                   // Streak when settled (for multiplier calc)
+
+  // Timestamps
+  createdAt             DateTime @default(now())
+  settledAt             DateTime?
+
+  // Context - is this part of a daily challenge, battle, or tournament?
+  dailyChallengeEntryId String?
+  dailyChallengeEntry   DailyChallengeEntry? @relation(fields: [dailyChallengeEntryId], references: [id])
+
+  battleId              String?
+  battle                Battle?  @relation(fields: [battleId], references: [id])
+
+  tournamentEntryId     String?
+  tournamentEntry       TournamentEntry? @relation(fields: [tournamentEntryId], references: [id])
+
+  @@unique([userId, marketId]) // One prediction per user per market
+  @@index([userId])
+  @@index([marketId])
+  @@index([isSettled])
+  @@index([createdAt])
+}
+
+enum PredictionChoice {
+  YES
+  NO
+}
+
+// ==========================================
+// DAILY CHALLENGE - Daily pick'em challenges
+// ==========================================
+model DailyChallenge {
+  id                    String   @id @default(cuid())
+
+  // The date this challenge is for (one per day)
+  date                  DateTime @unique @db.Date
+
+  // Markets included (5 markets per daily challenge)
+  markets               Market[] @relation("DailyChallengeMarkets")
+
+  // Status
+  isActive              Boolean  @default(true)  // Can users still enter?
+  isFullyResolved       Boolean  @default(false) // Have all 5 markets resolved?
+
+  // Timestamps
+  createdAt             DateTime @default(now())
+
+  // Relationships
+  entries               DailyChallengeEntry[]
+
+  @@index([date])
+  @@index([isActive])
+}
+
+model DailyChallengeEntry {
+  id                    String   @id @default(cuid())
+
+  // Who
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id])
+
+  // Which challenge
+  challengeId           String
+  challenge             DailyChallenge @relation(fields: [challengeId], references: [id])
+
+  // Progress
+  predictionsCount      Int      @default(0)    // How many of 5 they've made
+  isComplete            Boolean  @default(false) // Made all 5 picks?
+
+  // Results (after resolution)
+  correctCount          Int?                    // How many they got right
+  isPerfect             Boolean  @default(false) // Got all 5 right?
+
+  // Rewards
+  xpAwarded             Int      @default(0)
+  bonusPointsAwarded    Int      @default(0)
+
+  // Timestamps
+  createdAt             DateTime @default(now())
+  completedAt           DateTime?
+
+  // Relationships
+  predictions           Prediction[]
+
+  @@unique([userId, challengeId]) // One entry per user per challenge
+  @@index([userId])
+  @@index([challengeId])
+}
+
+// ==========================================
+// HEAD-TO-HEAD BATTLES
+// ==========================================
+model Battle {
+  id                    String   @id @default(cuid())
+
+  // Players
+  player1Id             String
+  player1               User     @relation("BattlePlayer1", fields: [player1Id], references: [id])
+  player2Id             String?                 // Null until someone joins
+  player2               User?    @relation("BattlePlayer2", fields: [player2Id], references: [id])
+
+  // ELO at battle start (for ELO calculation)
+  player1Elo            Int
+  player2Elo            Int?
+
+  // Stakes
+  pointsStake           Int                     // Each player risks this amount
+
+  // Status
+  status                BattleStatus @default(OPEN)
+
+  // Markets (10 markets per battle)
+  markets               Market[] @relation("BattleMarkets")
+
+  // Results
+  player1Correct        Int      @default(0)
+  player2Correct        Int      @default(0)
+  winnerId              String?
+  winner                User?    @relation("BattleWinner", fields: [winnerId], references: [id])
+  player1EloChange      Int?
+  player2EloChange      Int?
+
+  // Type
+  isRanked              Boolean  @default(false) // From matchmaking vs custom
+
+  // Share link for custom battles
+  shareCode             String?  @unique
+
+  // Timestamps
+  createdAt             DateTime @default(now())
+  expiresAt             DateTime                // Open battles expire after 24h
+  startedAt             DateTime?               // When player 2 joined
+  completedAt           DateTime?
+
+  // Relationships
+  predictions           Prediction[]
+
+  @@index([status])
+  @@index([player1Id])
+  @@index([player2Id])
+  @@index([shareCode])
+}
+
+enum BattleStatus {
+  OPEN        // Waiting for player 2
+  ACTIVE      // Both players joined, predictions in progress
+  RESOLVING   // Waiting for markets to resolve
+  COMPLETED   // Battle finished, winner determined
+  CANCELLED   // Player 1 cancelled before player 2 joined
+  EXPIRED     // No player 2 joined within 24 hours
+  TIE         // Both players got same score
+}
+
+// ==========================================
+// MATCHMAKING QUEUE - For ranked battles
+// ==========================================
+model MatchmakingQueue {
+  id                    String   @id @default(cuid())
+
+  // Who
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id])
+
+  // Matching criteria
+  elo                   Int                     // Their ELO when they joined queue
+  pointsStake           Int                     // How much they want to bet
+
+  // Search range (expands over time)
+  eloRangeMin           Int                     // Current min ELO they'll accept
+  eloRangeMax           Int                     // Current max ELO they'll accept
+
+  // Timestamps
+  joinedAt              DateTime @default(now())
+  lastExpandedAt        DateTime @default(now()) // When we last expanded search range
+
+  @@index([elo])
+  @@index([pointsStake])
+}
+
+// ==========================================
+// TOURNAMENTS - Bracket competitions
+// ==========================================
+model Tournament {
+  id                    String   @id @default(cuid())
+
+  // Details
+  name                  String
+  description           String?
+
+  // Entry
+  entryFee              Int                     // Points cost to enter
+  maxParticipants       Int      @default(100)
+  currentParticipants   Int      @default(0)
+
+  // Markets (predictions in the tournament)
+  markets               Market[] @relation("TournamentMarkets")
+
+  // Timing
+  registrationDeadline  DateTime
+  startDate             DateTime
+  endDate               DateTime
+
+  // Status
+  status                TournamentStatus @default(UPCOMING)
+
+  // Prize pool
+  prizePool             Int      @default(0)    // Total points from entries
+
+  // Timestamps
+  createdAt             DateTime @default(now())
+
+  // Relationships
+  entries               TournamentEntry[]
+
+  @@index([status])
+  @@index([startDate])
+}
+
+enum TournamentStatus {
+  UPCOMING     // Not yet open for registration
+  REGISTRATION // Open for registration
+  ACTIVE       // Tournament in progress
+  RESOLVING    // Waiting for all markets to resolve
+  COMPLETED    // Tournament finished
+  CANCELLED    // Tournament cancelled
+}
+
+model TournamentEntry {
+  id                    String   @id @default(cuid())
+
+  // Who
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id])
+
+  // Which tournament
+  tournamentId          String
+  tournament            Tournament @relation(fields: [tournamentId], references: [id])
+
+  // Results
+  pointsScored          Int      @default(0)    // Total points from correct predictions
+  correctPredictions    Int      @default(0)
+  rank                  Int?                    // Final ranking
+  prizeWon              Int      @default(0)    // Points won
+  xpAwarded             Int      @default(0)
+
+  // Timestamps
+  createdAt             DateTime @default(now())
+
+  // Relationships
+  predictions           Prediction[]
+
+  @@unique([userId, tournamentId])
+  @@index([tournamentId])
+  @@index([pointsScored])
+}
+
+// ==========================================
+// SEASONS - Ranked competitive seasons
+// ==========================================
+model Season {
+  id                    String   @id @default(cuid())
+
+  // Details
+  seasonNumber          Int      @unique
+  name                  String                  // e.g., "Season 1: Genesis"
+
+  // Timing
+  startDate             DateTime
+  endDate               DateTime
+
+  // Status
+  status                SeasonStatus @default(UPCOMING)
+
+  // Timestamps
+  createdAt             DateTime @default(now())
+
+  // Relationships
+  results               SeasonResult[]
+
+  @@index([status])
+}
+
+enum SeasonStatus {
+  UPCOMING
+  ACTIVE
+  COMPLETED
+}
+
+model SeasonResult {
+  id                    String   @id @default(cuid())
+
+  // Who
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id])
+
+  // Which season
+  seasonId              String
+  season                Season   @relation(fields: [seasonId], references: [id])
+
+  // Results
+  finalElo              Int
+  finalRank             Int
+  badge                 SeasonBadge?           // Top 10, Top 100, Top 1%
+  xpBonus               Int      @default(0)
+
+  // Timestamps
+  createdAt             DateTime @default(now())
+
+  @@unique([userId, seasonId])
+  @@index([seasonId, finalRank])
+}
+
+enum SeasonBadge {
+  TOP_10
+  TOP_100
+  TOP_1_PERCENT
+}
+
+// ==========================================
+// AIRDROPS - Token distribution to users
+// ==========================================
+model Airdrop {
+  id                    String   @id @default(cuid())
+
+  // Details
+  totalTokens           Float                   // Total tokens being distributed
+  totalXpSnapshot       Int                     // Total platform XP at snapshot time
+  totalRecipients       Int      @default(0)
+
+  // Status
+  status                AirdropStatus @default(PENDING)
+
+  // Timestamps
+  snapshotAt            DateTime @default(now())
+  executedAt            DateTime?
+  completedAt           DateTime?
+
+  // Relationships
+  distributions         AirdropDistribution[]
+
+  @@index([status])
+}
+
+enum AirdropStatus {
+  PENDING      // Created, not yet executed
+  PROCESSING   // Currently sending tokens
+  COMPLETED    // All tokens sent
+  FAILED       // Something went wrong
+}
+
+model AirdropDistribution {
+  id                    String   @id @default(cuid())
+
+  // Who
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id])
+
+  // Which airdrop
+  airdropId             String
+  airdrop               Airdrop  @relation(fields: [airdropId], references: [id])
+
+  // Calculation
+  userXpAtSnapshot      Int
+  percentageOfTotal     Float                   // e.g., 0.05 = 5%
+  tokensReceived        Float
+
+  // Transaction
+  transactionSignature  String?
+  status                DistributionStatus @default(PENDING)
+
+  // Timestamps
+  sentAt                DateTime?
+
+  @@unique([userId, airdropId])
+  @@index([airdropId])
+  @@index([status])
+}
+
+enum DistributionStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// ==========================================
+// ELO HISTORY - Track rating changes over time
+// ==========================================
+model EloHistory {
+  id                    String   @id @default(cuid())
+
+  // Who
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id])
+
+  // The change
+  eloBefore             Int
+  eloAfter              Int
+  change                Int                     // Can be negative
+
+  // Why
+  reason                EloChangeReason
+  referenceId           String?                 // ID of prediction/battle/etc
+
+  // Timestamp
+  createdAt             DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+enum EloChangeReason {
+  PREDICTION      // From a market prediction
+  BATTLE          // From head-to-head battle
+  DECAY           // From inactivity decay
+  SEASON_RESET    // From season soft reset
+}
+
+// ==========================================
+// POINTS TRANSACTIONS - Audit log
+// ==========================================
+model PointsTransaction {
+  id                    String   @id @default(cuid())
+
+  // Who
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id])
+
+  // The change
+  amount                Int                     // Positive = gained, negative = lost
+  balanceBefore         Int
+  balanceAfter          Int
+
+  // Why
+  reason                PointsReason
+  referenceId           String?                 // ID of prediction/battle/etc
+  description           String?                 // Human readable description
+
+  // Timestamp
+  createdAt             DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+enum PointsReason {
+  INITIAL_BONUS       // Starting 1000 points
+  DAILY_ALLOWANCE     // Bankruptcy protection
+  PREDICTION_WAGER    // Points spent on prediction
+  PREDICTION_WIN      // Points won from prediction
+  PREDICTION_LOSS     // Points lost from prediction (for tracking)
+  PREDICTION_REFUND   // Voided market refund
+  BATTLE_STAKE        // Points put up for battle
+  BATTLE_WIN          // Points won from battle
+  BATTLE_REFUND       // Battle cancelled/tie refund
+  TOURNAMENT_ENTRY    // Tournament entry fee
+  TOURNAMENT_PRIZE    // Tournament winnings
+  ADMIN_ADJUSTMENT    // Manual admin adjustment
+}
+
+// ==========================================
+// SYSTEM CONFIG - Platform settings
+// ==========================================
+model SystemConfig {
+  id                    String   @id @default(cuid())
+  key                   String   @unique
+  value                 String
+  description           String?
+  updatedAt             DateTime @updatedAt
+}
