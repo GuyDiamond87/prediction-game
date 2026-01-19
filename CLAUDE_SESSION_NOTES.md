@@ -1,5 +1,5 @@
 # Prediction Game - Session Notes
-> Last updated: January 18, 2026
+> Last updated: January 19, 2026
 
 ## Project Location
 `/Users/julianvasil/prediction-game`
@@ -182,11 +182,41 @@ POLYMARKET_API_URL="https://gamma-api.polymarket.com"
 
 ---
 
-## Next Steps When Resuming
+## Deployment Progress (IN PROGRESS)
+
+**GitHub Repository**: https://github.com/GuyDiamond87/prediction-game
+
+### Completed:
+- [x] Pushed code to GitHub
+- [x] Added `backend/railway.toml` configuration file
+- [x] Updated CORS for production
+
+### In Progress - Railway Setup:
+User is currently completing these steps in Railway dashboard:
+
+1. **Create Railway account** - https://railway.com, login with GitHub
+2. **Create new project** - Deploy from GitHub repo, select `prediction-game`, choose `backend` folder
+3. **Add PostgreSQL** - Click "New" → "Database" → "PostgreSQL"
+
+### After Railway setup is done, need to:
+4. **Connect PostgreSQL to backend** - Link the database to the backend service
+5. **Configure environment variables**:
+   - `DATABASE_URL` - Auto-configured when linking PostgreSQL
+   - `PORT` - Railway sets this automatically
+   - `SOLANA_RPC_URL` - `https://api.mainnet-beta.solana.com`
+   - `TOKEN_MINT_ADDRESS` - User's pump.fun token mint (if they have one)
+   - `MIN_TOKEN_BALANCE` - `1`
+   - `FRONTEND_URL` - Can leave empty for now
+   - `POLYMARKET_API_URL` - `https://gamma-api.polymarket.com`
+   - `NODE_ENV` - `production`
+6. **Deploy and test** - Hit the deployed `/health` endpoint
+
+---
+
+## Future Steps
 
 1. **Option A**: Start frontend (React + Vite + Solana wallet adapter)
-2. **Option B**: Deploy backend (Railway, Render, etc.)
-3. **Option C**: Add admin routes for creating tournaments manually
+2. **Option B**: Add admin routes for creating tournaments manually
 
 ---
 
