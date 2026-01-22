@@ -425,7 +425,8 @@ router.get('/user/:walletAddress', async (req, res) => {
       prisma.battle.count({
         where: {
           ...where,
-          winnerId: { not: null, not: user.id },
+          winnerId: { not: user.id },
+          NOT: { winnerId: null },
           status: 'COMPLETED'
         }
       })

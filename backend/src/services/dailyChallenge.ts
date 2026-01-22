@@ -139,9 +139,10 @@ export async function getTodaysChallenge(): Promise<any> {
   // If no challenge exists, try to generate one
   if (!challenge) {
     try {
-      challenge = await generateDailyChallenge();
+      const generated = await generateDailyChallenge();
+      if (!generated) return null;
       challenge = await prisma.dailyChallenge.findUnique({
-        where: { id: challenge.id },
+        where: { id: generated.id },
         include: {
           markets: {
             select: {
