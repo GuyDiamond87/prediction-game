@@ -104,9 +104,10 @@ async function startServer() {
     await prisma.$connect();
     console.log('✅ Connected to database');
 
-    // Start the Express server
-    app.listen(PORT, () => {
-      console.log(`✅ Server running on port ${PORT}`);
+    // Start the Express server (bind to 0.0.0.0 for Railway)
+    console.log(`🚀 Starting server on port ${PORT}...`);
+    app.listen(Number(PORT), '0.0.0.0', () => {
+      console.log(`✅ Server running on 0.0.0.0:${PORT}`);
       console.log(`   Health check: http://localhost:${PORT}/health`);
     });
 
