@@ -137,11 +137,15 @@ async function upsertMarket(
   trendingVolumeThreshold: number
 ): Promise<'created' | 'updated' | 'skipped'> {
   // Parse prices - Polymarket returns YES price first, NO price second
-  const yesPrice = parseFloat(polymarket.outcomePrices?.[0] || '0.5');
-  const noPrice = parseFloat(polymarket.outcomePrices?.[1] || '0.5');
+  // Handle NaN values by defaulting to 0.5
+  let yesPrice = parseFloat(polymarket.outcomePrices?.[0] || '0.5');
+  let noPrice = parseFloat(polymarket.outcomePrices?.[1] || '0.5');
+  if (isNaN(yesPrice)) yesPrice = 0.5;
+  if (isNaN(noPrice)) noPrice = 0.5;
 
-  // Parse volume
-  const volume = parseFloat(polymarket.volume || '0') || polymarket.volumeNum || 0;
+  // Parse volume (handle NaN)
+  let volume = parseFloat(polymarket.volume || '0') || polymarket.volumeNum || 0;
+  if (isNaN(volume)) volume = 0;
 
   // Determine if this market is trending (top 50 by volume)
   const isTrending = volume >= trendingVolumeThreshold;
