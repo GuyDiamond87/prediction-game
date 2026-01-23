@@ -53,6 +53,16 @@ interface PolymarketMarket {
   // Category/tags
   tags?: Array<{ label: string }>;
   category?: string;
+
+  // Events (contains series info with category hints)
+  events?: Array<{
+    title?: string;
+    slug?: string;
+    series?: Array<{
+      title?: string;
+      slug?: string;
+    }>;
+  }>;
 }
 
 interface PolymarketResponse {
@@ -132,18 +142,53 @@ export async function syncMarketsFromPolymarket(): Promise<void> {
 /**
  * Insert or update a single market in our database
  */
-// Map Polymarket categories to our categories
-function mapCategory(polymarketCategory: string | undefined): string {
-  if (!polymarketCategory) return 'other';
-  const cat = polymarketCategory.toLowerCase();
+// Map Polymarket data to our categories
+function mapCategory(market: PolymarketMarket): string {
+  // Combine all text sources for category inference
+  const texts = [
+    market.category,
+    market.question,
+    market.tags?.[0]?.label,
+    market.events?.[0]?.title,
+    market.events?.[0]?.slug,
+    market.events?.[0]?.series?.[0]?.title,
+    market.events?.[0]?.series?.[0]?.slug,
+  ].filter(Boolean).join(' ').toLowerCase();
 
-  if (cat.includes('crypto') || cat.includes('bitcoin') || cat.includes('ethereum')) return 'crypto';
-  if (cat.includes('politic') || cat.includes('election') || cat.includes('trump') || cat.includes('biden') || cat.includes('us-current')) return 'politics';
-  if (cat.includes('sport') || cat.includes('nfl') || cat.includes('nba') || cat.includes('soccer') || cat.includes('football')) return 'sports';
-  if (cat.includes('entertainment') || cat.includes('movie') || cat.includes('music') || cat.includes('celeb')) return 'entertainment';
-  if (cat.includes('tech') || cat.includes('ai') || cat.includes('software')) return 'technology';
-  if (cat.includes('econ') || cat.includes('finance') || cat.includes('market') || cat.includes('stock')) return 'economics';
-  if (cat.includes('science') || cat.includes('health') || cat.includes('medical')) return 'science';
+  // Sports - check first as many markets are sports
+  if (texts.match(/\b(nfl|nba|mlb|nhl|soccer|football|basketball|baseball|hockey|tennis|golf|ufc|mma|boxing|f1|formula|racing|league|liga|premier|champions|world cup|olympics|sports?|game|match|win|score|team)\b/)) {
+    return 'sports';
+  }
+
+  // Crypto
+  if (texts.match(/\b(crypto|bitcoin|btc|ethereum|eth|solana|sol|defi|token|blockchain|binance|coinbase)\b/)) {
+    return 'crypto';
+  }
+
+  // Politics
+  if (texts.match(/\b(politic|election|president|trump|biden|democrat|republican|congress|senate|governor|vote|poll|cabinet|impeach|primary|nomination)\b/)) {
+    return 'politics';
+  }
+
+  // Entertainment
+  if (texts.match(/\b(entertainment|movie|film|music|album|grammy|oscar|emmy|celebrity|actor|actress|singer|netflix|disney|stream|box office|pop.?culture)\b/)) {
+    return 'entertainment';
+  }
+
+  // Technology
+  if (texts.match(/\b(tech|ai|artificial.?intelligence|openai|google|apple|microsoft|meta|amazon|software|startup|ipo|chip|semiconductor)\b/)) {
+    return 'technology';
+  }
+
+  // Economics
+  if (texts.match(/\b(econ|inflation|fed|federal.?reserve|interest.?rate|gdp|recession|stock|s&p|dow|nasdaq|treasury|unemployment|jobs.?report)\b/)) {
+    return 'economics';
+  }
+
+  // Science
+  if (texts.match(/\b(science|health|medical|fda|vaccine|virus|covid|corona|disease|drug|pharma|clinical|research|nasa|space|climate)\b/)) {
+    return 'science';
+  }
 
   return 'other';
 }
@@ -192,8 +237,8 @@ async function upsertMarket(
     status = 'CLOSED';
   }
 
-  // Map category to our standard categories
-  const category = mapCategory(polymarket.category || polymarket.tags?.[0]?.label);
+  // Map category to our standard categories using all available data
+  const category = mapCategory(polymarket);
 
   // Parse dates
   const endDate = polymarket.endDate ? new Date(polymarket.endDate) : null;
