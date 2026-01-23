@@ -110,13 +110,17 @@ async function startServer() {
       console.log(`   Health check: http://localhost:${PORT}/health`);
     });
 
-    // Run initial market sync
-    console.log('🔄 Running initial market sync from Polymarket...');
-    await syncMarketsFromPolymarket();
-    console.log('✅ Initial market sync complete');
-
     // Schedule background jobs
     setupBackgroundJobs();
+
+    // Run initial market sync (don't crash if it fails - cron will retry)
+    console.log('🔄 Running initial market sync from Polymarket...');
+    try {
+      await syncMarketsFromPolymarket();
+      console.log('✅ Initial market sync complete');
+    } catch (syncError) {
+      console.error('⚠️ Initial market sync failed (will retry via cron):', syncError);
+    }
 
   } catch (error) {
     console.error('❌ Failed to start server:', error);

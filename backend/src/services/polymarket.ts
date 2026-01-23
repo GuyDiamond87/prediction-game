@@ -14,8 +14,8 @@ import axios from 'axios';
 import { prisma } from '../index';
 import { MarketStatus, MarketOutcome } from '@prisma/client';
 
-// Polymarket Gamma API base URL
-const POLYMARKET_API = process.env.POLYMARKET_API_URL || 'https://gamma-api.polymarket.com';
+// Polymarket Gamma API base URL (trim to handle env vars with trailing spaces)
+const POLYMARKET_API = (process.env.POLYMARKET_API_URL || 'https://gamma-api.polymarket.com').trim();
 
 // How many top markets by volume to consider "trending"
 const TRENDING_THRESHOLD = 50;
