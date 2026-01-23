@@ -30,8 +30,11 @@ router.get('/', async (req, res) => {
       trending,
       category,
       status,
+      isActive,
       limit = '50',
-      offset = '0'
+      page = '1',
+      sortBy = 'volume',
+      sortOrder = 'desc'
     } = req.query;
 
     // Build filter conditions
@@ -49,19 +52,36 @@ router.get('/', async (req, res) => {
       where.status = status.toUpperCase();
     }
 
-    // Default to only showing OPEN markets unless specified
-    if (!status) {
+    // Handle isActive filter from frontend
+    if (isActive === 'true') {
       where.status = 'OPEN';
+    }
+
+    // Default to only showing OPEN markets unless specified
+    if (!status && isActive === undefined) {
+      where.status = 'OPEN';
+    }
+
+    const limitNum = Math.min(parseInt(limit as string) || 50, 100);
+    const pageNum = Math.max(parseInt(page as string) || 1, 1);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Get total count for pagination
+    const total = await prisma.market.count({ where });
+
+    // Build orderBy
+    const orderBy: any[] = [];
+    if (sortBy === 'closesAt') {
+      orderBy.push({ endDate: sortOrder === 'asc' ? 'asc' : 'desc' });
+    } else {
+      orderBy.push({ isTrending: 'desc' }, { volume: 'desc' });
     }
 
     const markets = await prisma.market.findMany({
       where,
-      orderBy: [
-        { isTrending: 'desc' },
-        { volume: 'desc' }
-      ],
-      take: Math.min(parseInt(limit as string) || 50, 100),
-      skip: parseInt(offset as string) || 0,
+      orderBy,
+      take: limitNum,
+      skip,
       select: {
         id: true,
         polymarketId: true,
@@ -83,7 +103,7 @@ router.get('/', async (req, res) => {
       }
     });
 
-    // Format response
+    // Format response to match frontend expectations
     const formattedMarkets = markets.map(market => ({
       ...market,
       predictionCount: market._count.predictions,
@@ -91,8 +111,13 @@ router.get('/', async (req, res) => {
     }));
 
     res.json({
-      markets: formattedMarkets,
-      count: formattedMarkets.length
+      data: formattedMarkets,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
     });
 
   } catch (error) {
