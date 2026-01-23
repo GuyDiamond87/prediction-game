@@ -12,7 +12,12 @@ import { prisma } from '../index';
 import { BattleStatus } from '@prisma/client';
 import { calculateBattleEloChange, getRankTier } from '../utils/elo';
 import { calculateBattlePayout } from '../utils/points';
-import { nanoid } from 'nanoid';
+import crypto from 'crypto';
+
+// Generate a short random code (replacement for nanoid)
+function generateShareCode(length: number = 10): string {
+  return crypto.randomBytes(length).toString('base64url').slice(0, length);
+}
 
 // Constants
 const BATTLE_MARKET_COUNT = 10; // Markets per battle
@@ -82,7 +87,7 @@ export async function createBattle(
         pointsStake,
         status: 'OPEN',
         isRanked,
-        shareCode: isRanked ? null : nanoid(10),
+        shareCode: isRanked ? null : generateShareCode(10),
         expiresAt: new Date(Date.now() + BATTLE_EXPIRY_HOURS * 60 * 60 * 1000),
         markets: {
           connect: selectedMarkets.map(m => ({ id: m.id }))
