@@ -33,7 +33,7 @@ interface PolymarketMarket {
 
   // Outcomes (usually YES/NO)
   outcomes: string[];
-  outcomePrices: string[]; // Prices as strings like "0.65"
+  outcomePrices: string[] | string; // Can be array or JSON string like "[\"0.65\", \"0.35\"]"
 
   // Status
   active: boolean;
@@ -132,14 +132,40 @@ export async function syncMarketsFromPolymarket(): Promise<void> {
 /**
  * Insert or update a single market in our database
  */
+// Map Polymarket categories to our categories
+function mapCategory(polymarketCategory: string | undefined): string {
+  if (!polymarketCategory) return 'other';
+  const cat = polymarketCategory.toLowerCase();
+
+  if (cat.includes('crypto') || cat.includes('bitcoin') || cat.includes('ethereum')) return 'crypto';
+  if (cat.includes('politic') || cat.includes('election') || cat.includes('trump') || cat.includes('biden') || cat.includes('us-current')) return 'politics';
+  if (cat.includes('sport') || cat.includes('nfl') || cat.includes('nba') || cat.includes('soccer') || cat.includes('football')) return 'sports';
+  if (cat.includes('entertainment') || cat.includes('movie') || cat.includes('music') || cat.includes('celeb')) return 'entertainment';
+  if (cat.includes('tech') || cat.includes('ai') || cat.includes('software')) return 'technology';
+  if (cat.includes('econ') || cat.includes('finance') || cat.includes('market') || cat.includes('stock')) return 'economics';
+  if (cat.includes('science') || cat.includes('health') || cat.includes('medical')) return 'science';
+
+  return 'other';
+}
+
 async function upsertMarket(
   polymarket: PolymarketMarket,
   trendingVolumeThreshold: number
 ): Promise<'created' | 'updated' | 'skipped'> {
-  // Parse prices - Polymarket returns YES price first, NO price second
-  // Handle NaN values by defaulting to 0.5
-  let yesPrice = parseFloat(polymarket.outcomePrices?.[0] || '0.5');
-  let noPrice = parseFloat(polymarket.outcomePrices?.[1] || '0.5');
+  // Parse prices - outcomePrices may be a JSON string like "[\"0.65\", \"0.35\"]"
+  let pricesArray: string[] = [];
+  if (typeof polymarket.outcomePrices === 'string') {
+    try {
+      pricesArray = JSON.parse(polymarket.outcomePrices);
+    } catch {
+      pricesArray = [];
+    }
+  } else if (Array.isArray(polymarket.outcomePrices)) {
+    pricesArray = polymarket.outcomePrices;
+  }
+
+  let yesPrice = parseFloat(pricesArray[0] || '0.5');
+  let noPrice = parseFloat(pricesArray[1] || '0.5');
   if (isNaN(yesPrice)) yesPrice = 0.5;
   if (isNaN(noPrice)) noPrice = 0.5;
 
@@ -166,10 +192,8 @@ async function upsertMarket(
     status = 'CLOSED';
   }
 
-  // Get category from tags
-  const category = polymarket.category ||
-    polymarket.tags?.[0]?.label ||
-    'other';
+  // Map category to our standard categories
+  const category = mapCategory(polymarket.category || polymarket.tags?.[0]?.label);
 
   // Parse dates
   const endDate = polymarket.endDate ? new Date(polymarket.endDate) : null;
