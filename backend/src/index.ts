@@ -13,6 +13,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import cron from 'node-cron';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -34,8 +36,10 @@ import {
   processMatchmakingQueue,
   expandMatchmakingRanges,
   cleanupExpiredBattles,
-  checkAndResolveBattles
+  checkAndResolveBattles,
+  checkDraftTimeouts
 } from './services/battles';
+import { initBattleSocket } from './services/battleSocket';
 import {
   generateDailyChallenge,
   checkAndResolveDailyChallenges,
@@ -98,17 +102,36 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 // Start server
 const PORT = process.env.PORT || 3001;
 
+// Create HTTP server for Express + Socket.IO
+const httpServer = createServer(app);
+
+// Initialize Socket.IO with CORS configuration
+const io = new Server(httpServer, {
+  cors: {
+    origin: [
+      process.env.FRONTEND_URL,
+      'http://localhost:5173',
+      'http://localhost:3000'
+    ].filter(Boolean) as string[],
+    credentials: true
+  }
+});
+
+// Initialize battle socket handlers
+initBattleSocket(io);
+
 async function startServer() {
   try {
     // Test database connection
     await prisma.$connect();
     console.log('✅ Connected to database');
 
-    // Start the Express server (bind to 0.0.0.0 for Railway)
+    // Start the HTTP server (bind to 0.0.0.0 for Railway)
     console.log(`🚀 Starting server on port ${PORT}...`);
-    app.listen(Number(PORT), '0.0.0.0', () => {
+    httpServer.listen(Number(PORT), '0.0.0.0', () => {
       console.log(`✅ Server running on 0.0.0.0:${PORT}`);
       console.log(`   Health check: http://localhost:${PORT}/health`);
+      console.log(`   WebSocket: ws://localhost:${PORT}`);
     });
 
     // Schedule background jobs
@@ -195,6 +218,15 @@ function setupBackgroundJobs() {
   // ==========================================
   // BATTLES
   // ==========================================
+
+  // Check for draft pick timeouts every 5 seconds
+  cron.schedule('*/5 * * * * *', async () => {
+    try {
+      await checkDraftTimeouts();
+    } catch (error) {
+      console.error('❌ [Cron] Draft timeout check failed:', error);
+    }
+  });
 
   // Process matchmaking queue every 10 seconds
   cron.schedule('*/10 * * * * *', async () => {
@@ -292,6 +324,7 @@ function setupBackgroundJobs() {
 // Handle graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('Shutting down gracefully...');
+  io.close();
   await prisma.$disconnect();
   process.exit(0);
 });

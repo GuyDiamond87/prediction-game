@@ -65,6 +65,7 @@ model User {
   battlesAsPlayer1      Battle[]               @relation("BattlePlayer1")
   battlesAsPlayer2      Battle[]               @relation("BattlePlayer2")
   battlesWon            Battle[]               @relation("BattleWinner")
+  battlePicks           BattlePick[]
   matchmakingEntry      MatchmakingQueue?
   tournamentEntries     TournamentEntry[]
   seasonResults         SeasonResult[]
@@ -128,7 +129,8 @@ model Market {
   // Relationships
   predictions           Prediction[]
   dailyChallenges       DailyChallenge[]       @relation("DailyChallengeMarkets")
-  battles               Battle[]               @relation("BattleMarkets")
+  battlePicks           BattlePick[]
+  battlesAsTiebreaker   Battle[]               @relation("TiebreakerMarket")
   tournaments           Tournament[]           @relation("TournamentMarkets")
 
   @@index([status])
@@ -282,14 +284,25 @@ model Battle {
   player1Elo            Int
   player2Elo            Int?
 
-  // Stakes
+  // Stakes (fixed tiers: 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000)
   pointsStake           Int                     // Each player risks this amount
 
   // Status
   status                BattleStatus @default(OPEN)
 
-  // Markets (10 markets per battle)
-  markets               Market[] @relation("BattleMarkets")
+  // Draft system fields
+  coinFlipWinnerId      String?                 // ID of player who won coin flip (picks first)
+  currentPickPlayerId   String?                 // Whose turn to pick
+  currentPickNumber     Int      @default(0)    // 1-10 for main picks, 11 for tiebreaker market pick
+  currentPickDeadline   DateTime?               // When current pick times out (60 seconds)
+  draftCompletedAt      DateTime?               // When draft finished
+
+  // Tiebreaker (both players predict on same market)
+  tiebreakerMarketId    String?
+  tiebreakerMarket      Market?  @relation("TiebreakerMarket", fields: [tiebreakerMarketId], references: [id])
+  player1TiebreakerPick PredictionChoice?
+  player2TiebreakerPick PredictionChoice?
+  tiebreakerWinnerId    String?                 // Winner from tiebreaker (if used)
 
   // Results
   player1Correct        Int      @default(0)
@@ -299,20 +312,18 @@ model Battle {
   player1EloChange      Int?
   player2EloChange      Int?
 
-  // Type
-  isRanked              Boolean  @default(false) // From matchmaking vs custom
-
-  // Share link for custom battles
+  // Share link for battles
   shareCode             String?  @unique
 
   // Timestamps
   createdAt             DateTime @default(now())
-  expiresAt             DateTime                // Open battles expire after 24h
+  expiresAt             DateTime                // Open battles expire after 4h
   startedAt             DateTime?               // When player 2 joined
   completedAt           DateTime?
 
   // Relationships
   predictions           Prediction[]
+  picks                 BattlePick[]
 
   @@index([status])
   @@index([player1Id])
@@ -320,14 +331,45 @@ model Battle {
   @@index([shareCode])
 }
 
+// Individual picks in a battle draft
+model BattlePick {
+  id          String   @id @default(cuid())
+
+  // Which battle
+  battleId    String
+  battle      Battle   @relation(fields: [battleId], references: [id])
+
+  // Pick details
+  pickNumber  Int                     // 1-10 (order of pick in draft)
+  pickerId    String                  // Who made this pick
+  picker      User     @relation(fields: [pickerId], references: [id])
+
+  // Market and prediction
+  marketId    String
+  market      Market   @relation(fields: [marketId], references: [id])
+  prediction  PredictionChoice        // YES or NO
+
+  // Resolution
+  isCorrect   Boolean?                // Set when market resolves
+
+  // Metadata
+  wasTimeout  Boolean  @default(false) // Was this a random assignment due to timeout?
+  pickedAt    DateTime @default(now())
+
+  @@unique([battleId, pickNumber])    // Each pick number once per battle
+  @@unique([battleId, marketId])      // Each market once per battle
+  @@index([battleId])
+  @@index([pickerId])
+}
+
 enum BattleStatus {
   OPEN        // Waiting for player 2
-  ACTIVE      // Both players joined, predictions in progress
-  RESOLVING   // Waiting for markets to resolve
+  DRAFTING    // Both players online, picking markets
+  ACTIVE      // Draft complete, waiting for markets to resolve
   COMPLETED   // Battle finished, winner determined
   CANCELLED   // Player 1 cancelled before player 2 joined
-  EXPIRED     // No player 2 joined within 24 hours
-  TIE         // Both players got same score
+  EXPIRED     // No player 2 joined within time limit
+  ABANDONED   // Player left during draft
 }
 
 // ==========================================

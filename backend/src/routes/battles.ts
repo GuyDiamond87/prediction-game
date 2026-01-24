@@ -1,11 +1,12 @@
 /**
  * Battles API Routes
  *
- * Endpoints for head-to-head battles:
- * - Create/join battles
- * - Make battle predictions
- * - Matchmaking queue
- * - Battle history
+ * Endpoints for head-to-head battles with draft-style market picking:
+ * - Create battles with fixed wager tiers
+ * - Join battles and participate in draft
+ * - Make draft picks with 60 second timer
+ * - Tiebreaker market selection
+ * - Battle history and stats
  */
 
 import { Router } from 'express';
@@ -15,33 +16,63 @@ import {
   joinBattle,
   joinBattleByCode,
   cancelBattle,
-  makeBattlePrediction,
-  joinMatchmaking,
-  leaveMatchmaking
+  getOpenBattles,
+  getBattle,
+  getAvailableMarkets,
+  makePick,
+  makeTiebreakerPick,
+  submitTiebreakerPrediction,
+  WAGER_TIERS
 } from '../services/battles';
 
 const router = Router();
 
 /**
+ * GET /api/battles/wager-tiers
+ *
+ * Get available wager tiers
+ */
+router.get('/wager-tiers', (req, res) => {
+  res.json({ tiers: WAGER_TIERS });
+});
+
+/**
+ * GET /api/battles/open
+ *
+ * Get list of open battles waiting for opponents
+ */
+router.get('/open', async (req, res) => {
+  try {
+    const battles = await getOpenBattles();
+    res.json({ battles });
+  } catch (error) {
+    console.error('Error fetching open battles:', error);
+    res.status(500).json({ error: 'Failed to fetch open battles' });
+  }
+});
+
+/**
  * POST /api/battles
  *
- * Create a new battle
+ * Create a new battle with a wager tier
  *
  * Body: {
  *   walletAddress: string,
- *   pointsStake: number
+ *   wagerTier: number  // Must be one of WAGER_TIERS
  * }
  */
 router.post('/', async (req, res) => {
   try {
-    const { walletAddress, pointsStake } = req.body;
+    const { walletAddress, wagerTier } = req.body;
 
-    if (!walletAddress || !pointsStake) {
+    if (!walletAddress || wagerTier === undefined) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    if (typeof pointsStake !== 'number' || pointsStake < 50) {
-      return res.status(400).json({ error: 'Minimum stake is 50 points' });
+    if (!WAGER_TIERS.includes(wagerTier)) {
+      return res.status(400).json({
+        error: `Invalid wager tier. Must be one of: ${WAGER_TIERS.join(', ')}`
+      });
     }
 
     const user = await prisma.user.findUnique({
@@ -52,12 +83,12 @@ router.post('/', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const battle = await createBattle(user.id, pointsStake, false);
+    const battle = await createBattle(user.id, wagerTier);
 
     res.status(201).json({
       battle,
       shareLink: battle.shareCode ? `/battle/${battle.shareCode}` : null,
-      message: 'Battle created! Share the link to invite an opponent.'
+      message: 'Battle created! Share the link or wait in the lobby.'
     });
   } catch (error: any) {
     console.error('Error creating battle:', error);
@@ -91,7 +122,7 @@ router.post('/:id/join', async (req, res) => {
 
     res.json({
       battle,
-      message: 'Battle joined! Make your predictions.'
+      message: 'Battle joined! Connect to the battle room to start the draft.'
     });
   } catch (error: any) {
     console.error('Error joining battle:', error);
@@ -125,7 +156,7 @@ router.post('/join/:shareCode', async (req, res) => {
 
     res.json({
       battle,
-      message: 'Battle joined! Make your predictions.'
+      message: 'Battle joined! Connect to the battle room to start the draft.'
     });
   } catch (error: any) {
     console.error('Error joining battle by code:', error);
@@ -136,7 +167,7 @@ router.post('/join/:shareCode', async (req, res) => {
 /**
  * POST /api/battles/:id/cancel
  *
- * Cancel an open battle (creator only)
+ * Cancel an open battle (creator only, before someone joins)
  */
 router.post('/:id/cancel', async (req, res) => {
   try {
@@ -165,9 +196,53 @@ router.post('/:id/cancel', async (req, res) => {
 });
 
 /**
- * POST /api/battles/:id/predict
+ * GET /api/battles/:id/available-markets
  *
- * Make a prediction within a battle
+ * Get markets available for picking (resolving within 24 hours)
+ */
+router.get('/:id/available-markets', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { walletAddress } = req.query;
+
+    if (!walletAddress) {
+      return res.status(400).json({ error: 'Wallet address required' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { walletAddress: walletAddress as string }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const battle = await prisma.battle.findUnique({
+      where: { id }
+    });
+
+    if (!battle) {
+      return res.status(404).json({ error: 'Battle not found' });
+    }
+
+    // Check user is part of battle
+    if (battle.player1Id !== user.id && battle.player2Id !== user.id) {
+      return res.status(403).json({ error: 'You are not part of this battle' });
+    }
+
+    const markets = await getAvailableMarkets(id);
+
+    res.json({ markets });
+  } catch (error: any) {
+    console.error('Error fetching available markets:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch markets' });
+  }
+});
+
+/**
+ * POST /api/battles/:id/pick
+ *
+ * Make a draft pick (market + prediction)
  *
  * Body: {
  *   walletAddress: string,
@@ -175,7 +250,7 @@ router.post('/:id/cancel', async (req, res) => {
  *   prediction: 'YES' | 'NO'
  * }
  */
-router.post('/:id/predict', async (req, res) => {
+router.post('/:id/pick', async (req, res) => {
   try {
     const { id } = req.params;
     const { walletAddress, marketId, prediction } = req.body;
@@ -196,26 +271,107 @@ router.post('/:id/predict', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const battlePrediction = await makeBattlePrediction(id, user.id, marketId, prediction);
-
-    // Get updated battle state
-    const battle = await prisma.battle.findUnique({
-      where: { id },
-      include: {
-        predictions: {
-          where: { userId: user.id }
-        }
-      }
-    });
+    const result = await makePick(id, user.id, marketId, prediction);
 
     res.json({
-      prediction: battlePrediction,
-      predictionsCount: battle?.predictions.length || 0,
-      message: `Predicted ${prediction} on market`
+      pick: result.pick,
+      pickNumber: result.pickNumber,
+      draftComplete: result.draftComplete,
+      needsTiebreaker: result.needsTiebreaker,
+      nextPickerId: result.nextPickerId,
+      nextPickNumber: result.nextPickNumber,
+      nextDeadline: result.nextDeadline,
+      message: `Picked market with ${prediction} prediction`
     });
   } catch (error: any) {
-    console.error('Error making battle prediction:', error);
-    res.status(400).json({ error: error.message || 'Failed to make prediction' });
+    console.error('Error making pick:', error);
+    res.status(400).json({ error: error.message || 'Failed to make pick' });
+  }
+});
+
+/**
+ * POST /api/battles/:id/tiebreaker/pick
+ *
+ * Pick the tiebreaker market (coin flip loser only)
+ *
+ * Body: {
+ *   walletAddress: string,
+ *   marketId: string
+ * }
+ */
+router.post('/:id/tiebreaker/pick', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { walletAddress, marketId } = req.body;
+
+    if (!walletAddress || !marketId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { walletAddress }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const result = await makeTiebreakerPick(id, user.id, marketId);
+
+    res.json({
+      battle: result.battle,
+      predictionDeadline: result.predictionDeadline,
+      message: 'Tiebreaker market selected. Both players must now predict YES or NO.'
+    });
+  } catch (error: any) {
+    console.error('Error picking tiebreaker:', error);
+    res.status(400).json({ error: error.message || 'Failed to pick tiebreaker' });
+  }
+});
+
+/**
+ * POST /api/battles/:id/tiebreaker/predict
+ *
+ * Submit tiebreaker prediction (both players)
+ *
+ * Body: {
+ *   walletAddress: string,
+ *   prediction: 'YES' | 'NO'
+ * }
+ */
+router.post('/:id/tiebreaker/predict', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { walletAddress, prediction } = req.body;
+
+    if (!walletAddress || !prediction) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    if (prediction !== 'YES' && prediction !== 'NO') {
+      return res.status(400).json({ error: 'Prediction must be YES or NO' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { walletAddress }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const result = await submitTiebreakerPrediction(id, user.id, prediction);
+
+    res.json({
+      bothSubmitted: result.bothSubmitted,
+      draftComplete: result.bothSubmitted,
+      message: result.bothSubmitted
+        ? 'Draft complete! Battle is now active.'
+        : 'Prediction submitted. Waiting for opponent.'
+    });
+  } catch (error: any) {
+    console.error('Error submitting tiebreaker prediction:', error);
+    res.status(400).json({ error: error.message || 'Failed to submit prediction' });
   }
 });
 
@@ -229,83 +385,48 @@ router.get('/:id', async (req, res) => {
     const { id } = req.params;
     const { walletAddress } = req.query;
 
-    const battle = await prisma.battle.findUnique({
-      where: { id },
-      include: {
-        markets: {
-          select: {
-            id: true,
-            question: true,
-            category: true,
-            yesPrice: true,
-            noPrice: true,
-            status: true,
-            outcome: true,
-            endDate: true
-          }
-        },
-        player1: {
-          select: {
-            walletAddress: true,
-            displayName: true,
-            elo: true,
-            rankTier: true,
-            isTokenHolder: true
-          }
-        },
-        player2: {
-          select: {
-            walletAddress: true,
-            displayName: true,
-            elo: true,
-            rankTier: true,
-            isTokenHolder: true
-          }
-        }
-      }
-    });
+    const battle = await getBattle(id);
 
     if (!battle) {
       return res.status(404).json({ error: 'Battle not found' });
     }
 
-    // If wallet provided, include their predictions
-    let userPredictions: any[] = [];
+    // Filter data based on whether user is in the battle and battle status
+    let responseData: any = { battle };
+
     if (walletAddress) {
       const user = await prisma.user.findUnique({
         where: { walletAddress: walletAddress as string }
       });
 
       if (user) {
-        userPredictions = await prisma.prediction.findMany({
-          where: {
-            battleId: id,
-            userId: user.id
-          }
-        });
-      }
-    }
+        const isInBattle = battle.player1Id === user.id || battle.player2Id === user.id;
+        const isPlayer1 = battle.player1Id === user.id;
 
-    // Only show opponent predictions after battle is completed
-    let opponentPredictions: any[] = [];
-    if (battle.status === 'COMPLETED' || battle.status === 'TIE') {
-      opponentPredictions = await prisma.prediction.findMany({
-        where: { battleId: id },
-        include: {
-          user: {
-            select: { walletAddress: true, displayName: true }
+        responseData.isInBattle = isInBattle;
+        responseData.isPlayer1 = isPlayer1;
+        responseData.isMyTurn = battle.currentPickPlayerId === user.id;
+
+        // Hide opponent picks during draft (except which markets they picked)
+        if (isInBattle && battle.status === 'DRAFTING') {
+          responseData.battle.picks = battle.picks.map((pick: any) => ({
+            ...pick,
+            prediction: pick.pickerId === user.id ? pick.prediction : undefined
+          }));
+        }
+
+        // Hide tiebreaker predictions during prediction phase
+        if (isInBattle && battle.status === 'DRAFTING' && battle.currentPickNumber === 12) {
+          if (!isPlayer1) {
+            responseData.battle.player1TiebreakerPick = undefined;
+          } else {
+            responseData.battle.player2TiebreakerPick = undefined;
           }
         }
-      });
+      }
     }
 
-    res.json({
-      battle: {
-        ...battle,
-        userPredictions,
-        allPredictions: opponentPredictions
-      }
-    });
+    res.json(responseData);
   } catch (error) {
     console.error('Error fetching battle:', error);
     res.status(500).json({ error: 'Failed to fetch battle' });
@@ -324,19 +445,9 @@ router.get('/code/:shareCode', async (req, res) => {
     const battle = await prisma.battle.findUnique({
       where: { shareCode },
       include: {
-        markets: {
-          select: {
-            id: true,
-            question: true,
-            category: true,
-            yesPrice: true,
-            noPrice: true,
-            status: true,
-            endDate: true
-          }
-        },
         player1: {
           select: {
+            id: true,
             walletAddress: true,
             displayName: true,
             elo: true,
@@ -383,7 +494,13 @@ router.get('/user/:walletAddress', async (req, res) => {
     };
 
     if (status) {
-      where.status = status;
+      // Handle comma-separated status values
+      const statusList = (status as string).split(',').map(s => s.trim());
+      if (statusList.length === 1) {
+        where.status = statusList[0];
+      } else {
+        where.status = { in: statusList };
+      }
     }
 
     const battles = await prisma.battle.findMany({
@@ -412,7 +529,7 @@ router.get('/user/:walletAddress', async (req, res) => {
     });
 
     // Add user's role in each battle
-    const battlesWithRole = battles.map(b => ({
+    const battlesWithRole = battles.map((b: any) => ({
       ...b,
       userRole: b.player1Id === user.id ? 'player1' : 'player2',
       won: b.winnerId === user.id,
@@ -438,145 +555,12 @@ router.get('/user/:walletAddress', async (req, res) => {
         total,
         wins,
         losses,
-        winRate: total > 0 ? Math.round((wins / (wins + losses)) * 100) : 0
+        winRate: total > 0 ? Math.round((wins / (wins + losses || 1)) * 100) : 0
       }
     });
   } catch (error) {
     console.error('Error fetching user battles:', error);
     res.status(500).json({ error: 'Failed to fetch battles' });
-  }
-});
-
-/**
- * POST /api/battles/matchmaking/join
- *
- * Join the matchmaking queue for ranked battles
- */
-router.post('/matchmaking/join', async (req, res) => {
-  try {
-    const { walletAddress, pointsStake } = req.body;
-
-    if (!walletAddress || !pointsStake) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    if (typeof pointsStake !== 'number' || pointsStake < 50) {
-      return res.status(400).json({ error: 'Minimum stake is 50 points' });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { walletAddress }
-    });
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const entry = await joinMatchmaking(user.id, pointsStake);
-
-    res.json({
-      entry,
-      message: 'Joined matchmaking queue. Searching for opponent...'
-    });
-  } catch (error: any) {
-    console.error('Error joining matchmaking:', error);
-    res.status(400).json({ error: error.message || 'Failed to join matchmaking' });
-  }
-});
-
-/**
- * POST /api/battles/matchmaking/leave
- *
- * Leave the matchmaking queue
- */
-router.post('/matchmaking/leave', async (req, res) => {
-  try {
-    const { walletAddress } = req.body;
-
-    if (!walletAddress) {
-      return res.status(400).json({ error: 'Wallet address required' });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { walletAddress }
-    });
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    await leaveMatchmaking(user.id);
-
-    res.json({ message: 'Left matchmaking queue' });
-  } catch (error: any) {
-    console.error('Error leaving matchmaking:', error);
-    res.status(400).json({ error: error.message || 'Failed to leave matchmaking' });
-  }
-});
-
-/**
- * GET /api/battles/matchmaking/status
- *
- * Check matchmaking status
- */
-router.get('/matchmaking/status', async (req, res) => {
-  try {
-    const { walletAddress } = req.query;
-
-    if (!walletAddress) {
-      return res.status(400).json({ error: 'Wallet address required' });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { walletAddress: walletAddress as string }
-    });
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const entry = await prisma.matchmakingQueue.findUnique({
-      where: { userId: user.id }
-    });
-
-    // Check if they got matched to a battle
-    const recentBattle = await prisma.battle.findFirst({
-      where: {
-        OR: [
-          { player1Id: user.id },
-          { player2Id: user.id }
-        ],
-        isRanked: true,
-        createdAt: { gt: new Date(Date.now() - 60 * 1000) } // Within last minute
-      },
-      include: {
-        player1: { select: { walletAddress: true, displayName: true, elo: true } },
-        player2: { select: { walletAddress: true, displayName: true, elo: true } }
-      }
-    });
-
-    if (recentBattle && recentBattle.status === 'ACTIVE') {
-      return res.json({
-        status: 'matched',
-        battle: recentBattle
-      });
-    }
-
-    if (!entry) {
-      return res.json({ status: 'not_in_queue' });
-    }
-
-    const queueSize = await prisma.matchmakingQueue.count();
-
-    res.json({
-      status: 'searching',
-      entry,
-      queueSize,
-      searchingFor: `${Math.round((Date.now() - entry.joinedAt.getTime()) / 1000)}s`
-    });
-  } catch (error) {
-    console.error('Error checking matchmaking status:', error);
-    res.status(500).json({ error: 'Failed to check status' });
   }
 });
 

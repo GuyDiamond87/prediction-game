@@ -5,8 +5,9 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "prisma generate && tsc",
     "start": "node dist/index.js",
+    "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
@@ -15,13 +16,15 @@
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "@solana/web3.js": "^1.95.0",
+    "@types/socket.io": "^3.0.1",
     "axios": "^1.7.0",
+    "bs58": "^6.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
     "node-cron": "^3.0.3",
-    "tweetnacl": "^1.0.3",
-    "bs58": "^6.0.0"
+    "socket.io": "^4.8.3",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
